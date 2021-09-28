@@ -1,7 +1,6 @@
 """
-Run as: srun --gres gpu:1 --qos high2 --pty /home/jazzie/blender-2.82-linux64/blender -b --python pix3d_blender_render.py -- regexp
+Run as: srun --gres gpu:1 --qos high2 --pty /home/jazzie/blender-2.82-linux64/blender -b --python blender_render_all.py -- --cls_idx=0 --dset=pix3d
 
-Renders all models s.t.  model_name matches regexp
 """
 import os
 import os.path as osp
@@ -16,16 +15,21 @@ import glob
 from math import radians
 import argparse
 import mathutils
+from mathutils import Matrix
 # Add this folder to path
 sys.path.append(osp.dirname(osp.abspath(__file__)))
 import utils
 
-# parser = argparse.ArgumentParser()
-# parser.add_argument('--cls_idx', type=int, help='index of class to render')
-# args = parser.parse_args()
-cls_idx = 0
+parser = argparse.ArgumentParser()
+parser.add_argument('--cls_idx', type=int, help='index of class to render')
+parser.add_argument('--dset', type=str, help='dataset to render')
+argv = sys.argv[sys.argv.index("--") + 1:]
+args = parser.parse_args(argv)
+
+# cls_idx = 0
 DATASET_DIR =          '/home/jazzie/data/pix3d/model'
-RESULTS_DIR =          '/home/jazzie/data/pix3d/renders_fixednormals'
+RESULTS_DIR =          '/home/jazzie/data/pix3d/v2/test'
+# RESULTS_DIR =          '/home/jazzie/data/abo/' # TODO change to abo render
 VIEWS =                 12
 RESOLUTION =            256 # 512
 RENDER_DEPTH =          False # True
@@ -37,8 +41,15 @@ COLOR_FORMAT =          'PNG'
 NORMAL_FORMAT =         'OPEN_EXR'
 CAMERA_FOV_RANGE =      [20, 50] # [20, 50] # [40, 40]
 # CAMERA_FOC_RANGE =      [25, 60] # [20, 50] # [40, 40]
-LIGHT_NUM =             6 # 6
-LIGHT_ENERGY =          12 # 8
+
+if args.dset == 'abo':
+    LIGHT_NUM =             8
+    LIGHT_ENERGY =          20 
+    RAD_MULT =              3
+if args.dset == 'pix3d':
+    LIGHT_NUM =             6
+    LIGHT_ENERGY =          12
+    RAD_MULT =              6
 
 def remove_prefix(text, prefix):
     if text.startswith(prefix):
@@ -72,6 +83,21 @@ def import_obj(obj_path) -> bpy.types.Object:
     bpy.context.view_layer.update()
     return obj
 
+def import_glb(glb_path) -> bpy.types.Object:
+    """
+        Import GLB at glb_path, return corresponding mesh object
+        Assumes the scene is empty
+    """
+    status = bpy.ops.import_scene.gltf(filepath=glb_path)
+    assert('FINISHED' in status)
+    bpy.ops.object.select_all(action='SELECT')
+    objects = bpy.context.selected_objects[:]
+    obj = [o for o in objects if o.type=='MESH'][0]
+    obj.rotation_euler = 0,0,0      # clear default rotation
+    obj.location = 0,0,0            # clear default translation
+    bpy.context.view_layer.update()
+    return obj
+
 def setup_nodegraph(scene):
     # Render Optimizations
     scene.render.use_persistent_data = True
@@ -97,7 +123,6 @@ def setup_nodegraph(scene):
         depth_file_output = None
 
     if RENDER_NORMALS:
-        # import pdb;pdb.set_trace()
         '''
         scale_normal = tree.nodes.new(type='CompositorNodeMixRGB')
         scale_normal.blend_type = 'MULTIPLY'
@@ -127,6 +152,16 @@ def setup_nodegraph(scene):
     # links.new(render_layers.outputs['Color'], albedo_file_output.inputs[0])
     return depth_file_output, normal_file_output
 
+def add_environment_lighting(scene):
+    world = scene.world
+    world.use_nodes = True
+
+    enode = world.node_tree.nodes.new('ShaderNodeTexEnvironment')
+    enode.image = bpy.data.images.load(ENV_LIGHTING_PATH)
+
+    node_tree = world.node_tree
+    node_tree.links.new(enode.outputs['Color'], node_tree.nodes['Background'].inputs['Color'])
+
 def create_random_point_lights(number, radius, energy=10):
     lights = []
 
@@ -150,7 +185,7 @@ def create_random_point_lights(number, radius, energy=10):
 
     return lights
 
-def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals=True, color_depth=16):
+def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals=True, color_depth=16, data_dict=None):
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -158,8 +193,15 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
     # Clear scene
     utils.clean_objects()
 
-    # Import obj
-    obj_object = import_obj(obj_path)
+    # Import object
+    ext = obj_path.split('.')[-1]
+    if ext == 'glb':
+        obj_object = import_glb(obj_path)
+    elif ext == 'obj':
+        obj_object = import_obj(obj_path)
+    else:
+        assert False, 'unrecognized ext type!'
+
     print('Imported name: ', obj_object.name)
     verts = np.array([tuple(obj_object.matrix_world @ v.co) for v in obj_object.data.vertices])
     vmin = verts.min(axis=0)
@@ -173,14 +215,15 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
     (depth_file_output, normal_file_output) = setup_nodegraph(scene)
 
     # Add random lighting
-    light_objects = create_random_point_lights(LIGHT_NUM, 6*obj_size, energy=LIGHT_ENERGY)
+    light_objects = create_random_point_lights(LIGHT_NUM, RAD_MULT*obj_size, energy=LIGHT_ENERGY)
 
     # Create collection for objects not to render with background
     objs = [ob for ob in scene.objects if ob.type in ('EMPTY') and 'Empty' in ob.name]
     bpy.ops.object.delete({"selected_objects": objs})
 
     # delete material if it exists
-    obj_object.data.materials.clear()
+    if args.dset == 'pix3d':
+        obj_object.data.materials.clear()
 
     # Setup camera, constraint to empty object
     cam = utils.create_camera(location=(0, 0, 1))
@@ -197,8 +240,53 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
 
     # Move everything to be centered at vcen
     b_empty.location = vcen
+
     for light in light_objects:
         light.location += b_empty.location
+
+    # set up data_dict specific things if relevant
+    if data_dict is not None:
+        views = 1
+        RESOLUTION = data_dict['img_size'][0]
+        RESOLUTION = data_dict['img_size'][1]
+        # img_names = ['posed_' + data_dict['img'].replace('.','/').split('/')[-2]]
+        img_names = [data_dict['img'].replace('.','/').split('/')[-2]]
+        trans_4x4 = Matrix.Translation(data_dict['trans_mat'])
+        rot_4x4 = Matrix(data_dict['rot_mat']).to_4x4()
+        scale_4x4 = Matrix(np.eye(4)) # no scale
+        matrix_world = trans_4x4 @ rot_4x4 @ scale_4x4
+        poses = [matrix_world]
+        focals = [data_dict['focal_length']]
+        cam.location = (0, 0, 0)
+        cam.rotation_euler = (0, np.pi, 0)
+    else:
+        RESOLUTION = 256
+        RESOLUTION = 256
+        img_names = ['r_' + str(i) for i in range(views)]
+        stepsize = 360.0 / views
+        poses = []
+        focals = []
+        # translation
+        # cam.location =  (0, 0, 1.8 * obj_size/np.tan(cam.data.angle/2))
+        for i in range(views):
+            rot = np.random.uniform(0, 2*np.pi, size=3) # random rotation
+            mat_eul = mathutils.Euler((rot[0], rot[1], rot[2]))
+            mat_rot = mat_eul.to_matrix().to_4x4()
+            '''
+            # trans_4x4 = Matrix.Translation((0, 0, 1.8*obj_size))
+            trans_4x4 = Matrix.Translation((0, 0, 4.8*obj_size))
+            rot_4x4 = mathutils.Matrix.Rotation(radians(i*stepsize), 4, 'Y') # @ mathutils.Matrix.Rotation(radians(10.0), 4, 'X')
+            # rot_4x4 = mathutils.Matrix.Rotation(radians(np.pi), 4, 'Y') # @ mathutils.Matrix.Rotation(radians(10.0), 4, 'X')
+            scale_4x4 = Matrix(np.eye(4)) # no scale
+            # matrix_world =  scale_4x4 # trans_4x4 @ rot_4x4 @ scale_4x4
+            matrix_world =  trans_4x4 @ rot_4x4 @ scale_4x4
+            '''
+            matrix_world = mat_rot
+            poses.append(matrix_world)
+            # focals.append(np.random.uniform(20,50)) # TODO is this a weird range???
+            
+            # TODO note  i think this was on for pix3d renders
+            # cam.location = (0, 0, 0)
 
     # Image settings
     scene.camera = cam
@@ -218,36 +306,35 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
     }
     out_data['frames'] = []
 
-    eles = np.random.uniform(-10.0, 60.0, VIEWS)
-    azis = np.random.uniform(0, 360.0, VIEWS)
-    # for debugging
-    stepsize = 360.0 / VIEWS
+    # eles = np.random.uniform(-10.0, 60.0, VIEWS)
+    # azis = np.random.uniform(0, 360.0, VIEWS)
 
-    for i in range(0, VIEWS):
-        scene.render.filepath = output_dir + '/r_' + str(i)
+    for i in range(0, views):
+        # scene.render.filepath = output_dir + '/r_' + str(i)
+        scene.render.filepath = os.path.join(output_dir, img_names[i])
         
-        # b_empty.rotation_euler[0] = radians(-1 * eles[i])
-        # b_empty.rotation_euler[1] += radians(stepsize)
-        # mat_eul = mathutils.Euler((radians(-1 * eles[i]), radians(stepsize*i), 0))
+        # rot = np.random.uniform(0, 2*np.pi, size=3) # random rotation
+        # mat_eul = mathutils.Euler((rot[0], rot[1], rot[2]))
+        # mat_rot = mat_eul.to_matrix().to_4x4()
         
-        rot = np.random.uniform(0, 2*np.pi, size=3) # random rotation
-        # print(rot)
-        # import pdb;pdb.set_trace()
-        mat_eul = mathutils.Euler((rot[0], rot[1], rot[2]))
-        mat_rot = mat_eul.to_matrix().to_4x4()
-#         mat_rot = mathutils.Matrix.Rotation(radians(i*stepsize), 4, 'Y')
-        obj_object.matrix_world = mat_rot
-        # print(b_empty.rotation_euler)
-#         import pdb;pdb.set_trace()
+        obj_object.matrix_world = poses[i]
+        obj_object.scale = (1, 1, 1)
         
         # Update camera location and angle
         bpy.context.view_layer.update()
-        # cam = scene.camera
-        # cam.data.lens = np.random.uniform(CAMERA_FOV_RANGE[0],CAMERA_FOV_RANGE[1])
-        cam.data.angle = np.random.uniform(CAMERA_FOV_RANGE[0],CAMERA_FOV_RANGE[1]) * np.pi/180
-        # cam.data.angle = cam.data.lens * np.pi/180
-        # cam.data.angle = 40 * np.pi/180
-        cam.location =  (0, 0, 1.8 * obj_size/np.tan(cam.data.angle/2))
+       
+        if args.dset == 'pix3d':
+            if not POSED:
+                cam.data.angle = np.random.uniform(CAMERA_FOV_RANGE[0],CAMERA_FOV_RANGE[1]) * np.pi/180
+                cam.location =  (0, 0, 1.8 * obj_size/np.tan(cam.data.angle/2))
+            else:
+                # TODO
+                # use foclas!
+                pass
+        else:
+            cam.data.angle = np.random.uniform(CAMERA_FOV_RANGE[0],CAMERA_FOV_RANGE[1]) * np.pi/180
+            cam.location =  (0, 0, 1.8 * obj_size/np.tan(cam.data.angle/2))
+        
         bpy.context.view_layer.update()
 
         if RENDER_DEPTH:
@@ -273,12 +360,6 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
                 'sensor_fit': cam.data.sensor_fit,
                 # 'focal': cam.data.lens,
                 'location': list(cam.location),
-                # 'scale': list(cam.scale),
-                # 'rotation_quaternion': list(cam.rotation_quaternion),
-                # 'be_location': list(b_empty.location),
-                # 'be_scale': list(b_empty.scale),
-                # 'be_rotation_euler': list(b_empty.rotation_euler),
-                # 'be_rotation_matrix': listify_matrix(b_empty.matrix_world),
             }
         }
         out_data['frames'].append(frame_data)
@@ -286,58 +367,68 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
     with open(output_dir + '/' + 'transforms.json', 'w') as out_file:
         json.dump(out_data, out_file, indent=4)
 
+def reset_and_set_gpu():
+    # reset scene
+    bpy.ops.wm.read_homefile(use_empty=True)
+    
+    # Mark all scene devices as GPU for cycles
+    bpy.context.scene.render.engine = 'CYCLES'
+    bpy.context.scene.cycles.device = 'GPU'
+
+    for scene in bpy.data.scenes:
+        scene.cycles.device = 'GPU'
+
+    # Enable CUDA
+    bpy.context.preferences.addons['cycles'].preferences.compute_device_type = 'CUDA'
+
+    for devices in bpy.context.preferences.addons['cycles'].preferences.get_devices():
+        eprint(devices)
+        for d in devices:
+            d.use = True
+            if d.type == 'CPU':
+                d.use = False
 
 if __name__ == "__main__":
 
     # RANDOM SEED
     np.random.seed(0)
 
-    # Check if only part of data has to be rerun
-    regexp = ".*"
-    pattern = re.compile(regexp)
+    if args.dset == 'pix3d':
+        data_list = json.load(open('/home/jazzie/data/pix3d/pix3d.json'))
 
-#     model_paths = glob.glob(f'{DATASET_DIR}/*/*/*.obj') # /class/obj_name/model.obj
-    
-    classes = ['bed', 'bookcase', 'chair', 'desk', 'misc', 'sofa', 'table', 'tool', 'wardrobe']
-    CLASS = classes[cls_idx]
-    model_paths = glob.glob(f'{DATASET_DIR}/{CLASS}/*/*.obj') # /class/obj_name/model.obj
-    for _mi, model_path in enumerate(model_paths):
-        model_name = model_path.split('/')[-2]
-        model_class = model_path.split('/')[-3]
-        
-        print(f'{_mi:04d}: {model_name}')
-        eprint(f'{_mi:04d}: {model_name}')
-        OBJ_PATH = model_path
+        classes = ['bed', 'bookcase', 'chair', 'desk', 'misc', 'sofa', 'table', 'tool', 'wardrobe']
+        CLASS = classes[args.cls_idx]
+        POSED = False 
+        model_paths = glob.glob(f'{DATASET_DIR}/{CLASS}/*/*.obj') # /class/obj_name/model.obj
+        for _mi, model_path in enumerate(model_paths):
+            
+            model_name = model_path.split('/')[-2]
+            model_class = model_path.split('/')[-3]
+            
+            if POSED:
+                # collect all data dicts that correspond to this certain model
+                # TODO
+                # for now just collect one
+                model_ddicts = []
+                for ddict in data_list:
+                    if ddict['model'].split('/')[-2] == model_name:
+                        model_ddicts.append(ddict)
+                data_dict = model_ddicts[0]
+                save_dir = os.path.join(RESULTS_DIR, 'posed')
+                import pdb;pdb.set_trace()
+            else:
+                save_dir = os.path.join(RESULTS_DIR, 'renders')
+                data_dict = None
+            
+            print(f'{_mi:04d}: {model_name}')
+            OBJ_PATH = model_path
 
-        # reset scene
-        bpy.ops.wm.read_homefile(use_empty=True)
-        
-        # FROM https://gist.github.com/S1U/13b8efe2c616a25d99de3d2ac4b34e86
-        # Mark all scene devices as GPU for cycles
-        bpy.context.scene.render.engine = 'CYCLES'
-        bpy.context.scene.cycles.device = 'GPU'
-
-        for scene in bpy.data.scenes:
-            scene.cycles.device = 'GPU'
-
-        # Enable CUDA
-        bpy.context.preferences.addons['cycles'].preferences.compute_device_type = 'CUDA'
-
-        for devices in bpy.context.preferences.addons['cycles'].preferences.get_devices():
-            eprint(devices)
-            for d in devices:
-                d.use = True
-                if d.type == 'CPU':
-                    d.use = False
-        
-        try:
-            OUTPUT_DIR = f'{RESULTS_DIR}/{model_class}/{model_name}'
-            # if len(glob.glob(osp.join(OUTPUT_DIR,'*.png'))) >= 48:
-            #     if len(glob.glob(osp.join(OUTPUT_DIR,'*.png'))) != 48:
-            #         print('too many images in', OUTPUT_DIR)
-            #         import pdb;pdb.set_trace()
-            #     print('already finished - continuing!')
-            #     continue
+            reset_and_set_gpu()
+           
+            OUTPUT_DIR = f'{save_dir}/{model_class}/{model_name}'
+            if len(glob.glob(osp.join(OUTPUT_DIR,'*.exr'))) >= VIEWS:
+                print('already finished - continuing!')
+                continue
             render_multiple(
                 OBJ_PATH,
                 OUTPUT_DIR,
@@ -345,14 +436,21 @@ if __name__ == "__main__":
                 RESOLUTION,
                 depth=RENDER_DEPTH,
                 normals=RENDER_NORMALS,
+                data_dict=data_dict
             )
-        except:
-            eprint("*** failed", model_name)
-            exc_type, exc_value, exc_traceback = sys.exc_info()
-            eprint("*** print_tb:")
-            traceback.print_tb(exc_traceback, limit=1, file=sys.stderr)
-            eprint("*** print_exception:")
-            # exc_type below is ignored on 3.5 and later
-            traceback.print_exception(exc_type, exc_value, exc_traceback,
-                                    limit=2, file=sys.stderr)
-#         import pdb;pdb.set_trace()
+            import pdb;pdb.set_trace()
+    elif args.dset == 'abo':
+        model_paths = glob.glob('/home/jazzie/ABO_RELEASE/3dmodels/original/*/*.glb')
+        for _mi, model_path in enumerate(model_paths):
+            model_name = model_path.split('/')[-1][0:-4] # remove ext
+
+            reset_and_set_gpu()
+            save_dir = os.path.join(RESULTS_DIR, 'renders')
+            OUTPUT_DIR = '%s/%s'%(save_dir, model_name)
+
+            render_multiple(model_path, OUTPUT_DIR, VIEWS, RESOLUTION, depth=RENDER_DEPTH, normals=RENDER_NORMALS)
+            # import pdb;pdb.set_trace()
+    else:
+        assert False, 'unrecognized dset!'
+    
+    print('done')

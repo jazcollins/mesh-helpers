@@ -26,14 +26,14 @@ import utils
 # args = parser.parse_args()
 cls_idx = 2
 DATASET_DIR =          '/home/jazzie/data/pix3d/'
-RESULTS_DIR =          '/home/jazzie/data/pix3d/renders_posed'
+RESULTS_DIR =          '/home/jazzie/data/pix3d/renders_posed_viewspace_test'
 RESOLUTION =            512
 RENDER_DEPTH =          False # True
 RENDER_NORMALS =        True
 COLOR_DEPTH =           16
 DEPTH_FORMAT =          'OPEN_EXR'
 COLOR_FORMAT =          'PNG'
-NORMAL_FORMAT =         'PNG'
+NORMAL_FORMAT =         'OPEN_EXR'
 CAMERA_FOV_RANGE =      [20, 50] # [20, 50] # [40, 40]
 # CAMERA_FOC_RANGE =      [25, 60] # [20, 50] # [40, 40]
 LIGHT_NUM =             6 # 6
@@ -82,11 +82,9 @@ def setup_nodegraph(scene):
 
     # Add passes for additionally dumping albedo and normals.
     scene.view_layers["View Layer"].use_pass_normal = True
-    # scene.view_layers["View Layer"].use_pass_color = True
 
     # Create input render layer node.
     render_layers = tree.nodes.new('CompositorNodeRLayers')
-
     if RENDER_DEPTH:
         depth_file_output = tree.nodes.new(type="CompositorNodeOutputFile")
         depth_file_output.label = 'Depth Output'
@@ -97,17 +95,31 @@ def setup_nodegraph(scene):
         depth_file_output = None
     
     if RENDER_NORMALS:
+        '''
+        scale_normal = tree.nodes.new(type='CompositorNodeMixRGB')
+        scale_normal.blend_type = 'MULTIPLY'
+        # scale_normal.inputs[2].default_value = (0.5, 0.5, 0.5, 1)
+        scale_normal.inputs[2].default_value = (1.0, 1.0, 1.0, 1)
+        links.new(render_layers.outputs['Normal'], scale_normal.inputs[1])
+
+        bias_normal = tree.nodes.new(type="CompositorNodeMixRGB")
+        bias_normal.blend_type = 'ADD'
+        # bias_normal.inputs[2].default_value = (0.5, 0.5, 0.5, 0)
+        bias_normal.inputs[2].default_value = (0.1, 0.1, 0.1, 0)
+        links.new(scale_normal.outputs[0], bias_normal.inputs[1])
+        normal_file_output = tree.nodes.new(type="CompositorNodeOutputFile")
+        normal_file_output.label = 'Normal Output'
+        links.new(bias_normal.outputs[0], normal_file_output.inputs[0])
+        '''
         normal_file_output = tree.nodes.new(type="CompositorNodeOutputFile")
         normal_file_output.label = 'Normal Output'
         links.new(render_layers.outputs['Normal'], normal_file_output.inputs[0])
+        
         normal_file_output.format.file_format = str(NORMAL_FORMAT)
         normal_file_output.base_path = ''
     else:
         normal_file_output = None
 
-    # albedo_file_output = tree.nodes.new(type="CompositorNodeOutputFile")
-    # albedo_file_output.label = 'Albedo Output'
-    # links.new(render_layers.outputs['Color'], albedo_file_output.inputs[0])
     return depth_file_output, normal_file_output
 
 def create_random_point_lights(number, radius, energy=10):
@@ -196,6 +208,12 @@ def render_multiple(obj_path, output_dir, data_dict, resolution, depth=True, nor
     scene.view_layers[0].cycles.use_denoising = True
     scene.cycles.samples = 128
 
+    
+    # TRYING
+    # this turns of gamma correction and makes nomral 'image' more accurate
+    # however makes rendered image very dark
+    # scene.view_settings.view_transform = 'Raw'
+
     out_data = {
         'obj_path':remove_prefix(obj_path, DATASET_DIR),
     }
@@ -260,6 +278,8 @@ if __name__ == "__main__":
     data_list = json.load(open('/home/jazzie/data/pix3d/pix3d.json'))
     classes = ['bed', 'bookcase', 'chair', 'desk', 'misc', 'sofa', 'table', 'tool', 'wardrobe']
     CLASS = classes[cls_idx]
+    import random
+    # random.shuffle(data_list)
     for data_dict in data_list:
         model_path = os.path.join(DATASET_DIR, data_dict['model'])
         model_name = model_path.split('/')[-2]
@@ -292,14 +312,17 @@ if __name__ == "__main__":
                 if d.type == 'CPU':
                     d.use = False
 
-
         try:
             OUTPUT_DIR = f'{RESULTS_DIR}/{model_class}'
             img_name = data_dict['img'].replace('.','/').split('/')[-2]
-            if len(glob.glob(os.path.join(OUTPUT_DIR,'r_' + img_name + '*'))) >= 2:
-                print('already finished - continuing!')
-                continue
-
+            # if img_name != '0004':
+            #     continue
+            
+            ## CHANGE BACK BEFORE DECLARING DONE
+            # if len(glob.glob(os.path.join(OUTPUT_DIR,'r_' + img_name + '*'))) >= 2:
+            #     print('already finished - continuing!')
+            #     continue
+            
             render_multiple(
                 OBJ_PATH,
                 OUTPUT_DIR,
@@ -317,3 +340,4 @@ if __name__ == "__main__":
             # exc_type below is ignored on 3.5 and later
             traceback.print_exception(exc_type, exc_value, exc_traceback,
                                     limit=2, file=sys.stderr)
+#         import pdb;pdb.set_trace()

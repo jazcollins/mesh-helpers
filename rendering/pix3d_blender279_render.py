@@ -1,5 +1,5 @@
 """
-Run as: srun --gres gpu:1 --qos high2 --pty /home/jazzie/blender-2.82-linux64/blender -b --python pix3d_blender_render.py -- regexp
+Run as: srun --gres gpu:1 --qos high2 --pty /home/jazzie/blender-2.79b-linux64-glibc219-x86_64/blender -b --python pix3d_blender_render.py -- regexp
 
 Renders all models s.t.  model_name matches regexp
 """
@@ -15,10 +15,19 @@ import bpy
 import glob
 from math import radians
 import argparse
-import mathutils
+
 # Add this folder to path
 sys.path.append(osp.dirname(osp.abspath(__file__)))
-import utils
+# from utils import clean_objects, create_camera 
+
+
+def create_camera(location):
+    bpy.ops.object.camera_add(location=location)
+    return bpy.context.object
+
+def clean_objects() -> None:
+    for item in bpy.data.objects:
+        bpy.data.objects.remove(item)
 
 # parser = argparse.ArgumentParser()
 # parser.add_argument('--cls_idx', type=int, help='index of class to render')
@@ -26,9 +35,9 @@ import utils
 cls_idx = 0
 DATASET_DIR =          '/home/jazzie/data/pix3d/model'
 RESULTS_DIR =          '/home/jazzie/data/pix3d/renders_fixednormals'
-VIEWS =                 12
-RESOLUTION =            256 # 512
-RENDER_DEPTH =          False # True
+VIEWS =                 24
+RESOLUTION =            512
+RENDER_DEPTH =          True
 RENDER_NORMALS =        True
 COLOR_DEPTH =           16
 DEPTH_FORMAT =          'OPEN_EXR'
@@ -54,7 +63,7 @@ def parent_obj_to_camera(b_camera):
     b_empty.location = origin
     b_camera.parent = b_empty  # setup parenting
     bpy.context.scene.collection.objects.link(b_empty)
-    bpy.context.view_layer.objects.active = b_empty
+    bpy.context.render_layer.objects.active = b_empty
     return b_empty
 
 def listify_matrix(matrix):
@@ -69,7 +78,7 @@ def import_obj(obj_path) -> bpy.types.Object:
     obj = bpy.context.selected_objects[0]
     obj.rotation_euler = 0,0,0      # clear default rotation
     obj.location = 0,0,0            # clear default translation
-    bpy.context.view_layer.update()
+    # bpy.context.render_layer.update()
     return obj
 
 def setup_nodegraph(scene):
@@ -82,7 +91,7 @@ def setup_nodegraph(scene):
     links = tree.links
 
     # Add passes for additionally dumping albedo and normals.
-    scene.view_layers["View Layer"].use_pass_normal = True
+    scene.render_layers["RenderLayer"].use_pass_normal = True
 
     # Create input render layer node.
     render_layers = tree.nodes.new('CompositorNodeRLayers')
@@ -132,11 +141,11 @@ def create_random_point_lights(number, radius, energy=10):
 
     for i in range(number):
         # create light datablock, set attributes
-        light_data = bpy.data.lights.new(name=f'ptlight{i}', type='POINT')
+        light_data = bpy.data.lights.new(name='ptlight%d'%i, type='POINT')
         light_data.energy = energy
 
         # create new object with our light datablock
-        light_object = bpy.data.objects.new(name=f'ptlight{i}', object_data=light_data)
+        light_object = bpy.data.objects.new(name='ptlight%d'%i, object_data=light_data)
 
         #change location
         light_object.location = np.random.uniform(-1., 1., size=3)
@@ -156,7 +165,7 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
         os.makedirs(output_dir)
 
     # Clear scene
-    utils.clean_objects()
+    clean_objects()
 
     # Import obj
     obj_object = import_obj(obj_path)
@@ -170,6 +179,7 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
     scene = bpy.context.scene
 
     # Setup Node graph for rendering rgbs,depth,normals
+    import pdb;pdb.set_trace()
     (depth_file_output, normal_file_output) = setup_nodegraph(scene)
 
     # Add random lighting
@@ -183,7 +193,7 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
     obj_object.data.materials.clear()
 
     # Setup camera, constraint to empty object
-    cam = utils.create_camera(location=(0, 0, 1))
+    cam = create_camera(location=(0, 0, 1))
     cam.data.sensor_fit = 'HORIZONTAL'
     cam.data.sensor_width = 36.0
     cam.data.sensor_height = 36.0
@@ -210,7 +220,7 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
     scene.render.resolution_percentage = 100
     scene.render.dither_intensity = 0.0
     scene.render.film_transparent = True
-    scene.view_layers[0].cycles.use_denoising = True
+    scene.render_layers[0].cycles.use_denoising = True
     scene.cycles.samples = 128
 
     out_data = {
@@ -226,29 +236,23 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
     for i in range(0, VIEWS):
         scene.render.filepath = output_dir + '/r_' + str(i)
         
-        # b_empty.rotation_euler[0] = radians(-1 * eles[i])
-        # b_empty.rotation_euler[1] += radians(stepsize)
-        # mat_eul = mathutils.Euler((radians(-1 * eles[i]), radians(stepsize*i), 0))
+        # random rotation
+        # b_empty.rotation_euler = np.random.uniform(0, 2*np.pi, size=3)
         
-        rot = np.random.uniform(0, 2*np.pi, size=3) # random rotation
-        # print(rot)
-        # import pdb;pdb.set_trace()
-        mat_eul = mathutils.Euler((rot[0], rot[1], rot[2]))
-        mat_rot = mat_eul.to_matrix().to_4x4()
-#         mat_rot = mathutils.Matrix.Rotation(radians(i*stepsize), 4, 'Y')
-        obj_object.matrix_world = mat_rot
+        b_empty.rotation_euler[0] = radians(-1 * eles[i])
+        b_empty.rotation_euler[1] += radians(stepsize)
         # print(b_empty.rotation_euler)
-#         import pdb;pdb.set_trace()
+        # import pdb;pdb.set_trace()
         
         # Update camera location and angle
-        bpy.context.view_layer.update()
+        bpy.context.render_layer.update()
         # cam = scene.camera
         # cam.data.lens = np.random.uniform(CAMERA_FOV_RANGE[0],CAMERA_FOV_RANGE[1])
         cam.data.angle = np.random.uniform(CAMERA_FOV_RANGE[0],CAMERA_FOV_RANGE[1]) * np.pi/180
         # cam.data.angle = cam.data.lens * np.pi/180
         # cam.data.angle = 40 * np.pi/180
         cam.location =  (0, 0, 1.8 * obj_size/np.tan(cam.data.angle/2))
-        bpy.context.view_layer.update()
+        bpy.context.render_layer.update()
 
         if RENDER_DEPTH:
             depth_file_output.file_slots[0].path = scene.render.filepath + "_depth_"
@@ -257,7 +261,7 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
 
         bpy.ops.render.render(write_still=True)  # render still
 
-        bpy.context.view_layer.update()
+        bpy.context.render_layer.update()
         frame_data = {
             'file_path': remove_prefix(scene.render.filepath, DATASET_DIR),
             'transform_matrix': listify_matrix(cam.matrix_world),
@@ -300,13 +304,11 @@ if __name__ == "__main__":
     
     classes = ['bed', 'bookcase', 'chair', 'desk', 'misc', 'sofa', 'table', 'tool', 'wardrobe']
     CLASS = classes[cls_idx]
-    model_paths = glob.glob(f'{DATASET_DIR}/{CLASS}/*/*.obj') # /class/obj_name/model.obj
+    model_paths = glob.glob('%s/%s/*/*.obj'%(DATASET_DIR, CLASS)) # /class/obj_name/model.obj
     for _mi, model_path in enumerate(model_paths):
         model_name = model_path.split('/')[-2]
         model_class = model_path.split('/')[-3]
         
-        print(f'{_mi:04d}: {model_name}')
-        eprint(f'{_mi:04d}: {model_name}')
         OBJ_PATH = model_path
 
         # reset scene
@@ -320,18 +322,8 @@ if __name__ == "__main__":
         for scene in bpy.data.scenes:
             scene.cycles.device = 'GPU'
 
-        # Enable CUDA
-        bpy.context.preferences.addons['cycles'].preferences.compute_device_type = 'CUDA'
-
-        for devices in bpy.context.preferences.addons['cycles'].preferences.get_devices():
-            eprint(devices)
-            for d in devices:
-                d.use = True
-                if d.type == 'CPU':
-                    d.use = False
-        
         try:
-            OUTPUT_DIR = f'{RESULTS_DIR}/{model_class}/{model_name}'
+            OUTPUT_DIR = '%s/%s/%s'%(RESULTS_DIR, model_class, model_name)
             # if len(glob.glob(osp.join(OUTPUT_DIR,'*.png'))) >= 48:
             #     if len(glob.glob(osp.join(OUTPUT_DIR,'*.png'))) != 48:
             #         print('too many images in', OUTPUT_DIR)
@@ -355,4 +347,4 @@ if __name__ == "__main__":
             # exc_type below is ignored on 3.5 and later
             traceback.print_exception(exc_type, exc_value, exc_traceback,
                                     limit=2, file=sys.stderr)
-#         import pdb;pdb.set_trace()
+        import pdb;pdb.set_trace()

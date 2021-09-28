@@ -22,7 +22,8 @@ def create_text(
     rotation: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 ) -> bpy.types.Object:
 
-    new_text_data: bpy.types.Curve = bpy.data.curves.new(name=name, type='FONT')
+    # new_text_data: bpy.types.Curve = bpy.data.curves.new(name=name, type='FONT')
+    new_text_data = bpy.data.curves.new(name=name, type='FONT')
 
     new_text_data.body = body
     new_text_data.align_x = align_x
@@ -32,7 +33,8 @@ def create_text(
     new_text_data.space_line = space_line
     new_text_data.extrude = extrude
 
-    new_object: bpy.types.Object = bpy.data.objects.new(name, new_text_data)
+    # new_object: bpy.types.Object = bpy.data.objects.new(name, new_text_data)
+    new_object = bpy.data.objects.new(name, new_text_data)
     scene.collection.objects.link(new_object)
 
     new_object.location = location
