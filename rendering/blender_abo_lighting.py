@@ -1,5 +1,5 @@
 """
-Run as: srun --gres gpu:1 --qos high2 --pty /home/jazzie/blender-2.82-linux64/blender -b --python blender_render_all.py -- --cls_idx=0 --dset=pix3d
+Run as: srun --gres gpu:1 --qos high2 --pty /home/jazzie/blender-2.82-linux64/blender -b --python blender_abo_lighting.py -- --cls_idx=0 --dset=pix3d
 
 """
 import random
@@ -29,12 +29,11 @@ args = parser.parse_args(argv)
 
 # cls_idx = 0
 DATASET_DIR =          '/home/jazzie/data/pix3d/model'
-# RESULTS_DIR =          '/home/jazzie/data/pix3/v2/' # TODO not sure if this write to the right place??
-RESULTS_DIR =          '/home/jazzie/data/abo/' # TODO change to abo render
-VIEWS =                 12 # 12 + 12 = 24 (two diff random lighting schemes!)
+RESULTS_DIR =          '/home/jazzie/data/abo/lighting/' # TODO not sure if this write to the right place??
+VIEWS =                 12
 RESOLUTION =            256 # 512
 RENDER_DEPTH =          False # True
-RENDER_NORMALS =        True
+RENDER_NORMALS =        False
 COLOR_DEPTH =           16
 DEPTH_FORMAT =          'OPEN_EXR'
 COLOR_FORMAT =          'PNG'
@@ -46,7 +45,7 @@ CAMERA_FOV_RANGE =      [20, 50] # [20, 50] # [40, 40]
 if args.dset == 'abo':
     LIGHT_NUM =             8
     LIGHT_ENERGY =          20 
-    RAD_MULT =              3
+    RAD_MULT =              4
 if args.dset == 'pix3d':
     LIGHT_NUM =             6
     LIGHT_ENERGY =          12
@@ -124,6 +123,21 @@ def setup_nodegraph(scene):
         depth_file_output = None
 
     if RENDER_NORMALS:
+        '''
+        scale_normal = tree.nodes.new(type='CompositorNodeMixRGB')
+        scale_normal.blend_type = 'MULTIPLY'
+        scale_normal.inputs[2].default_value = (0.5, 0.5, 0.5, 1)
+        links.new(render_layers.outputs['Normal'], scale_normal.inputs[1])
+
+        bias_normal = tree.nodes.new(type='CompositorNodeMixRGB')
+        bias_normal.blend_type = 'ADD'
+        bias_normal.inputs[2].default_value = (0.5, 0.5, 0.5, 0)
+        links.new(scale_normal.outputs[0], bias_normal.inputs[1])
+        normal_file_output = tree.nodes.new(type="CompositorNodeOutputFile")
+        normal_file_output.label = 'Normal Output'
+        links.new(bias_normal.outputs[0], normal_file_output.inputs[0])
+        '''
+        
         normal_file_output = tree.nodes.new(type="CompositorNodeOutputFile")
         normal_file_output.label = 'Normal Output'
         links.new(render_layers.outputs['Normal'], normal_file_output.inputs[0])
@@ -133,6 +147,9 @@ def setup_nodegraph(scene):
     else:
         normal_file_output = None
 
+    # albedo_file_output = tree.nodes.new(type="CompositorNodeOutputFile")
+    # albedo_file_output.label = 'Albedo Output'
+    # links.new(render_layers.outputs['Color'], albedo_file_output.inputs[0])
     return depth_file_output, normal_file_output
 
 def add_environment_lighting(scene):
@@ -199,7 +216,6 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
 
     # Add random lighting
     light_objects = create_random_point_lights(LIGHT_NUM, RAD_MULT*obj_size, energy=LIGHT_ENERGY)
-
     # Create collection for objects not to render with background
     objs = [ob for ob in scene.objects if ob.type in ('EMPTY') and 'Empty' in ob.name]
     bpy.ops.object.delete({"selected_objects": objs})
@@ -243,9 +259,8 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
         cam.location = (0, 0, 0)
         cam.rotation_euler = (0, np.pi, 0)
     else:
-        RESOLUTION = 256
-        RESOLUTION = 256
-        # img_names = ['r_' + str(i + 12) for i in range(views)]
+        RESOLUTION = 512
+        RESOLUTION = 512
         img_names = ['r_' + str(i) for i in range(views)]
         stepsize = 360.0 / views
         poses = []
@@ -253,21 +268,12 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
         # translation
         # cam.location =  (0, 0, 1.8 * obj_size/np.tan(cam.data.angle/2))
         for i in range(views):
-            rot = np.random.uniform(0, 2*np.pi, size=3) # random rotation
-            mat_eul = mathutils.Euler((rot[0], rot[1], rot[2]))
-            mat_rot = mat_eul.to_matrix().to_4x4()
-            '''
             # trans_4x4 = Matrix.Translation((0, 0, 1.8*obj_size))
             trans_4x4 = Matrix.Translation((0, 0, 4.8*obj_size))
-            rot_4x4 = mathutils.Matrix.Rotation(radians(i*stepsize), 4, 'Y') # @ mathutils.Matrix.Rotation(radians(10.0), 4, 'X')
-            # rot_4x4 = mathutils.Matrix.Rotation(radians(np.pi), 4, 'Y') # @ mathutils.Matrix.Rotation(radians(10.0), 4, 'X')
+            rot_4x4 = mathutils.Matrix.Rotation(radians(2*stepsize), 4, 'Y') # @ mathutils.Matrix.Rotation(radians(10.0), 4, 'X')
             scale_4x4 = Matrix(np.eye(4)) # no scale
-            # matrix_world =  scale_4x4 # trans_4x4 @ rot_4x4 @ scale_4x4
             matrix_world =  trans_4x4 @ rot_4x4 @ scale_4x4
-            '''
-            matrix_world = mat_rot
             poses.append(matrix_world)
-            # focals.append(np.random.uniform(20,50)) # TODO is this a weird range???
             
             # TODO note  i think this was on for pix3d renders
             # cam.location = (0, 0, 0)
@@ -294,12 +300,17 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
     # azis = np.random.uniform(0, 360.0, VIEWS)
 
     for i in range(0, views):
-        # scene.render.filepath = output_dir + '/r_' + str(i)
-        scene.render.filepath = os.path.join(output_dir, img_names[i])
         
-        # rot = np.random.uniform(0, 2*np.pi, size=3) # random rotation
-        # mat_eul = mathutils.Euler((rot[0], rot[1], rot[2]))
-        # mat_rot = mat_eul.to_matrix().to_4x4()
+        # delete lights and set up new ones
+        bpy.ops.object.select_all(action='DESELECT')
+        bpy.ops.object.select_by_type(type='LIGHT')
+        bpy.ops.object.delete()
+
+        light_objects = create_random_point_lights(LIGHT_NUM, RAD_MULT*obj_size, energy=LIGHT_ENERGY)
+        for light in light_objects:
+            light.location += b_empty.location
+
+        scene.render.filepath = os.path.join(output_dir, img_names[i])
         
         obj_object.matrix_world = poses[i]
         obj_object.scale = (1, 1, 1)
@@ -316,7 +327,8 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
                 # use foclas!
                 pass
         else:
-            cam.data.angle = np.random.uniform(CAMERA_FOV_RANGE[0],CAMERA_FOV_RANGE[1]) * np.pi/180
+            # cam.data.angle = np.random.uniform(CAMERA_FOV_RANGE[0],CAMERA_FOV_RANGE[1]) * np.pi/180
+            cam.data.angle = 20 * np.pi/180
             cam.location =  (0, 0, 1.8 * obj_size/np.tan(cam.data.angle/2))
         
         bpy.context.view_layer.update()
@@ -348,7 +360,6 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
         }
         out_data['frames'].append(frame_data)
 
-#     with open(output_dir + '/' + 'transforms2.json', 'w') as out_file:
     with open(output_dir + '/' + 'transforms.json', 'w') as out_file:
         json.dump(out_data, out_file, indent=4)
 
@@ -427,20 +438,17 @@ if __name__ == "__main__":
             import pdb;pdb.set_trace()
     elif args.dset == 'abo':
         model_paths = glob.glob('/home/jazzie/ABO_RELEASE/3dmodels/original/*/*.glb')
-        random.shuffle(model_paths)
 
+        model_paths = [model_path for model_path in model_paths if 'B00EUL2B16' in model_path]
         for _mi, model_path in enumerate(model_paths):
             model_name = model_path.split('/')[-1][0:-4] # remove ext
-            
+
             save_dir = os.path.join(RESULTS_DIR, 'renders')
             OUTPUT_DIR = '%s/%s'%(save_dir, model_name)
-            if len(glob.glob(osp.join(OUTPUT_DIR,'*.exr'))) >= 24: #  VIEWS:
-                print('already finished - continuing!')
-                continue
             
             reset_and_set_gpu()
             render_multiple(model_path, OUTPUT_DIR, VIEWS, RESOLUTION, depth=RENDER_DEPTH, normals=RENDER_NORMALS)
-#             import pdb;pdb.set_trace()
+            # import pdb;pdb.set_trace()
     else:
         assert False, 'unrecognized dset!'
     
