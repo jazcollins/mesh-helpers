@@ -29,19 +29,21 @@ args = parser.parse_args(argv)
 
 # cls_idx = 0
 DATASET_DIR =          '/home/jazzie/data/pix3d/model'
-# RESULTS_DIR =          '/home/jazzie/data/pix3/v2/' # TODO not sure if this write to the right place??
-RESULTS_DIR =          '/home/jazzie/data/abo/' # TODO change to abo render
-VIEWS =                 12 # 12 + 12 = 24 (two diff random lighting schemes!)
+RESULTS_DIR =          '/home/jazzie/code/mesh-helpers/rendering/results/test_pix3d/'
+# RESULTS_DIR =          '/home/jazzie/data/abo/' # TODO change to abo render
+VIEWS =                 48 # 12 # 12 + 12 = 24 (two diff random lighting schemes!)
 RESOLUTION =            256 # 512
 RENDER_DEPTH =          False # True
-RENDER_NORMALS =        True
+RENDER_NORMALS =        False # True
 COLOR_DEPTH =           16
 DEPTH_FORMAT =          'OPEN_EXR'
 COLOR_FORMAT =          'PNG'
-# NORMAL_FORMAT =         'PNG'
-NORMAL_FORMAT =         'OPEN_EXR'
+NORMAL_FORMAT =         'PNG'
+# NORMAL_FORMAT =         'OPEN_EXR'
 CAMERA_FOV_RANGE =      [20, 50] # [20, 50] # [40, 40]
 # CAMERA_FOC_RANGE =      [25, 60] # [20, 50] # [40, 40]
+MIN_ELEVATION = -10
+MAX_ELEVATION = 100
 
 if args.dset == 'abo':
     LIGHT_NUM =             8
@@ -297,16 +299,28 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
         # scene.render.filepath = output_dir + '/r_' + str(i)
         scene.render.filepath = os.path.join(output_dir, img_names[i])
         
-        # rot = np.random.uniform(0, 2*np.pi, size=3) # random rotation
-        # mat_eul = mathutils.Euler((rot[0], rot[1], rot[2]))
-        # mat_rot = mat_eul.to_matrix().to_4x4()
-        
-        obj_object.matrix_world = poses[i]
-        obj_object.scale = (1, 1, 1)
-        
+
+        # UPPER VIEWS
+        '''
+        # TODO currently doesn't work bc model seems not upright?
+        min_rot0 = np.cos((MIN_ELEVATION)*np.pi/180)
+        max_rot0 = np.cos((MAX_ELEVATION)*np.pi/180)
+        rot = np.random.uniform(0, 1, size=3) * (max_rot0-min_rot0,0,2*np.pi)
+        rot[0] = np.arccos(rot[0] + min_rot0)
+        b_empty.rotation_euler = rot
+        '''
+
+        # RANDOM ROTS   
+        # b_empty.rotation_euler = np.zeros(3) # np.random.uniform(0, 2*np.pi, size=3)
+        b_empty.rotation_euler = np.random.uniform(0, 2*np.pi, size=3)
+
+        cam.data.angle = np.random.uniform(CAMERA_FOV_RANGE[0],CAMERA_FOV_RANGE[1]) * np.pi/180
+        cam.location =  (0, 0, 1.8 * obj_size/np.tan(cam.data.angle/2))
+
         # Update camera location and angle
         bpy.context.view_layer.update()
-       
+        
+        '''
         if args.dset == 'pix3d':
             if not POSED:
                 cam.data.angle = np.random.uniform(CAMERA_FOV_RANGE[0],CAMERA_FOV_RANGE[1]) * np.pi/180
@@ -320,7 +334,7 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
             cam.location =  (0, 0, 1.8 * obj_size/np.tan(cam.data.angle/2))
         
         bpy.context.view_layer.update()
-
+        '''
         if RENDER_DEPTH:
             depth_file_output.file_slots[0].path = scene.render.filepath + "_depth_"
         if RENDER_NORMALS:
@@ -348,7 +362,6 @@ def render_multiple(obj_path, output_dir, views, resolution, depth=True, normals
         }
         out_data['frames'].append(frame_data)
 
-#     with open(output_dir + '/' + 'transforms2.json', 'w') as out_file:
     with open(output_dir + '/' + 'transforms.json', 'w') as out_file:
         json.dump(out_data, out_file, indent=4)
 
@@ -382,9 +395,14 @@ if __name__ == "__main__":
         data_list = json.load(open('/home/jazzie/data/pix3d/pix3d.json'))
 
         classes = ['bed', 'bookcase', 'chair', 'desk', 'misc', 'sofa', 'table', 'tool', 'wardrobe']
-        CLASS = classes[args.cls_idx]
+        
+        if args.cls_idx < 0:
+            CLASS = '*'
+        else:
+            CLASS = classes[args.cls_idx]
+
         POSED = False 
-        model_paths = glob.glob(f'{DATASET_DIR}/{CLASS}/*/*.obj') # /class/obj_name/model.obj
+        model_paths = glob.glob(f'{DATASET_DIR}/{CLASS}/*/model.obj') # /class/obj_name/model.obj
         for _mi, model_path in enumerate(model_paths):
             
             model_name = model_path.split('/')[-2]
@@ -424,7 +442,7 @@ if __name__ == "__main__":
                 normals=RENDER_NORMALS,
                 data_dict=data_dict
             )
-            import pdb;pdb.set_trace()
+            # import pdb;pdb.set_trace()
     elif args.dset == 'abo':
         model_paths = glob.glob('/home/jazzie/ABO_RELEASE/3dmodels/original/*/*.glb')
         random.shuffle(model_paths)
